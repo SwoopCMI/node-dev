@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "dateformat": "~1.0.4-1.2.3",
+    "eslint": "^0.22.1",
     "dynamic-dedupe": "^0.2.0",
     "filewatcher": "~1.1.1",
     "node-notifier": "^4.0.2",
