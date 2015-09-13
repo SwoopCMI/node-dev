@@ -1,37 +1,67 @@
 var fs = require('fs')
   , child = require('child_process')
   , test = require('tap').test
+  , touch = require('touch')
 
 var dir = __dirname +  '/fixture'
   , bin = __dirname + '/../bin/node-dev'
   , msgFile = dir + '/message.js'
-  , msg = 'module.exports = "Please touch message.js now"\n'
+  , ignoredFile = dir + '/ignoredModule.js'
 
-function touch() {
-  fs.writeFileSync(msgFile, msg)
+
+// Constants
+var MESSAGE = fs.readFileSync(msgFile).toString()
+
+// Helpers
+function touchFile(file) {
+  return function() {
+    touch.sync(file ? file : msgFile)
+  }
 }
 
 function spawn(cmd, cb) {
   var ps = child.spawn('node', [bin].concat(cmd.split(' ')), { cwd: dir })
     , out = ''
+    , err = ''
 
-  if (cb) ps.stdout.on('data', function(data) {
-    out += data.toString()
-    var ret = cb.call(ps, out)
-    if (typeof ret == 'function') cb = ret
-    else if (ret && ret.exit) {
-      ps.stdout.removeAllListeners('data')
-      ps.on('exit', function() { setTimeout(ret.exit, 1000) })
-      ps.kill()
-    }
-  })
+  if (cb) {
+
+    // capture stderr
+    ps.stderr.on('data', function(data) {
+      err += data.toString()
+    })
+
+    // invoke callback
+    ps.on('exit', function(code, signal) {
+      if (err) cb(err, code, signal)
+    })
+
+    ps.stdout.on('data', function(data) {
+      out += data.toString()
+      var ret = cb.call(ps, out)
+      if (typeof ret == 'function') {
+        // use the returned function as new callback
+        cb = ret
+      }
+      else if (ret && ret.exit) {
+        // kill the process and invoke the given function
+        ps.stdout.removeAllListeners('data')
+        ps.stderr.removeAllListeners('data')
+        ps.removeAllListeners('exit')
+        ps.on('exit', function() { setTimeout(ret.exit, 1000) })
+        ps.kill()
+      }
+    })
+
+  }
+
   return ps
 }
 
 function run(cmd, done) {
   spawn(cmd, function(out) {
     if (out.match(/touch message.js/)) {
-      setTimeout(touch, 500)
+      setTimeout(touchFile(), 500)
       return function(out) {
         if (out.match(/Restarting/)) {
           return { exit: done }
@@ -41,6 +71,14 @@ function run(cmd, done) {
   })
 }
 
+// Tests
+
+test('should pass unknown args to node binary', function(t) {
+  spawn('--expose_gc gc.js foo', function(out) {
+    t.is(out.trim(), 'foo function')
+    return { exit: t.end.bind(t) }
+  })
+})
 
 test('should restart the server', function(t) {
   run('server.js', t.end.bind(t))
@@ -49,16 +87,38 @@ test('should restart the server', function(t) {
 test('should restart the server twice', function(t) {
   spawn('server.js', function(out) {
     if (out.match(/touch message.js/)) {
-      setTimeout(touch, 500)
+      setTimeout(touchFile(), 500)
       return function(out) {
         if (out.match(/Restarting/)) {
-          setTimeout(touch, 500)
+          setTimeout(touchFile(), 500)
           return function(out) {
             if (out.match(/Restarting/)) {
               return { exit: t.end.bind(t) }
             }
           }
         }
+      }
+    }
+  })
+})
+
+test('should not restart the server for ignored modules', function(t) {
+  ps = spawn('server.js', function(out) {
+    if (out.match(/touch message.js/)) {
+      setTimeout(touchFile(ignoredFile), 500)
+
+      var successTimeoutId = setTimeout(function () {
+        ps.removeAllListeners('exit')
+        ps.kill()
+
+        t.end()
+      }, 1000);
+
+      return function(out) {
+        clearTimeout(successTimeoutId)
+        t.fail('server restarted unexpectedly')
+
+        return { exit: t.end.bind(t) }
       }
     }
   })
@@ -78,7 +138,7 @@ test('should support coffee-script', function(t) {
 
 test('should restart when a file is renamed', function(t) {
   var tmp = dir + '/message.tmp'
-  fs.writeFileSync(tmp, msg)
+  fs.writeFileSync(tmp, MESSAGE)
   spawn('log.js', function(out) {
     if (out.match(/touch message.js/)) {
       fs.renameSync(tmp, msgFile)
@@ -94,7 +154,7 @@ test('should restart when a file is renamed', function(t) {
 test('should handle errors', function(t) {
   spawn('error.js', function(out) {
     if (out.match(/ERROR/)) {
-      setTimeout(touch, 500)
+      setTimeout(touchFile(), 500)
       return function(out) {
         if (out.match(/Restarting/)) {
           return { exit: t.end.bind(t) }
@@ -135,7 +195,7 @@ test('should pass through the exit code', function(t) {
   })
 })
 
-test('should conceil the wrapper', function(t) {
+test('should conceal the wrapper', function(t) {
   // require.main should be main.js not wrap.js!
   spawn('main.js').on('exit', function(code) {
     t.is(code, 0)
@@ -177,7 +237,7 @@ test('should set NODE_ENV', function(t) {
 test('should allow graceful shutdowns', function(t) {
   spawn('server.js', function(out) {
     if (out.match(/touch message.js/)) {
-      setTimeout(touch, 500)
+      setTimeout(touchFile(), 500)
       return function(out) {
         if (out.match(/exit/)) {
           return { exit: t.end.bind(t) }
